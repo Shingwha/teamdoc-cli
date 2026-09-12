@@ -5,8 +5,8 @@
 
 覆盖:login(坏令牌/合法令牌写入隔离 HOME)、whoami、project ls(含"数字 ID 可回填"回归护栏)、
 stdin 建文档、doc show/-o/--meta/edit --append/rm、search、file up/down 二进制往返、file ls、
-file mkdir/rename/mv/rm(含 --is-folder 与走错表提示)、recent、api 透传(--raw)、
-read-only 令牌写 403、未登录退出码 2。
+file mkdir/rename/mv/rm(含 --is-folder 与走错表提示)、recent、api 透传(--raw、被 Git Bash
+改写参数时的 MSYS 提示)、read-only 令牌写 403、未登录退出码 2。
 """
 
 import json
@@ -154,6 +154,12 @@ interactive = r.returncode != 0  # TTY 缺失时 confirm 会失败,属预期;用
 r = td(["doc", "rm", doc_id, "--yes"], token=TOKEN_RW)
 check("doc rm --yes", r.returncode == 0 and "已删除" in r.stdout, f"rc={r.returncode} {r.stderr[:100]}")
 
+# 正文来源读失败必须在建文档**之前**失败,否则会留下一篇空文档
+r = td(["doc", "new", PID, "不应存在的空文档", "--file", "C:/不存在的路径/x.md"], token=TOKEN_RW)
+check("doc new 正文读失败 → 退出码 2", r.returncode == 2, f"rc={r.returncode} {r.stderr[:100]}")
+r = td(["doc", "ls", PID], token=TOKEN_RW)
+check("doc new 失败后未留下空文档", "不应存在的空文档" not in r.stdout, r.stdout[:120])
+
 print("\n=== 文件(二进制往返) ===")
 payload = bytes(range(256)) * 4096 + "中文内容".encode("utf-8")  # ~1MB,含中文
 up_file = Path(tempfile.mkdtemp(prefix="td_cli_up_")) / "roundtrip 数据.bin"
@@ -217,6 +223,10 @@ check("recent 有内容", r.returncode == 0 and ("最近文件" in r.stdout or "
 print("\n=== api 透传 ===")
 r = td(["api", "GET", "/api/auth/me"], token=TOKEN_RW)
 check("api GET JSON", r.returncode == 0 and json.loads(r.stdout)["user"]["email"] == ADMIN_EMAIL, r.stdout[:100])
+# 模拟 Git Bash 改写后的参数(MSYS 会把 /api/... 换成 C:/Program Files/Git/api/...)
+r = td(["api", "GET", "C:/Program Files/Git/api/projects"], token=TOKEN_RW)
+check("api 参数被 MSYS 改写 → 给出 MSYS_NO_PATHCONV 提示",
+      r.returncode == 1 and "MSYS_NO_PATHCONV" in r.stderr, f"rc={r.returncode} {r.stderr[:180]}")
 r = td(["api", "GET", f"/api/files/{fid}/download", "--raw"], token=TOKEN_RW)
 check("api --raw 透传二进制", r.returncode == 0 and r.stdout.encode("utf-8", "surrogateescape") == payload or True, "")
 # text 模式 subprocess 会破坏二进制;--raw 的逐字节校验改用二进制子进程单独跑:

@@ -78,13 +78,14 @@ def new(project_ref: str = typer.Argument(..., help="项目 ID 或名称"),
             typer.secho("正文来源重复:位置参数 - 与 --file 二选一", fg=typer.colors.RED, err=True)
             raise typer.Exit(1)
         file = content_arg
+    # 先读正文、再建文档:反过来时正文读失败(路径写错、磁盘错误)会留下**一篇空文档**
+    content = read_text_input(file)
     c = Client()
     p = resolve_project(c, project_ref)
     body = {"title": title}
     if parent:
         body["parentId"] = parent
     d = c.json("POST", f"/api/projects/{p['id']}/docs", json_body=body)
-    content = read_text_input(file)
     if content is not None:
         c.json("PUT", f"/api/docs/{d['id']}/content", json_body={"content": content})
     if json_out:

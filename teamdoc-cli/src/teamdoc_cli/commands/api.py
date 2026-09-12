@@ -13,6 +13,17 @@ from ..output import handle, print_json
 METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 
 
+def _looks_like_msys_rewrite(path: str) -> bool:
+    """判断参数是否已被 Git Bash(MSYS)改写成 Windows 路径。
+
+    MSYS 会把"以 / 开头的参数"当 POSIX 路径翻译成 Windows 路径后再生效
+    (`/api/projects` → `C:/Program Files/Git/api/projects`),程序拿到的已经是被改写过的串,
+    代码里还原不了 —— 只能认出这个特征并告诉用户加 `MSYS_NO_PATHCONV=1`。
+    判据:盘符开头 + 含接口段(正常用户不会这么敲路径)。
+    """
+    return path[1:3] == ":/" and ("/api/" in path or path.endswith("/api"))
+
+
 @handle
 def api(method: str = typer.Argument(..., help="HTTP 方法:GET/POST/PUT/PATCH/DELETE"),
         path: str = typer.Argument(..., help="接口路径,以 / 开头,如 /api/projects"),
@@ -24,7 +35,11 @@ def api(method: str = typer.Argument(..., help="HTTP 方法:GET/POST/PUT/PATCH/D
         typer.secho(f"不支持的方法 {method},可用:{'/'.join(sorted(METHODS))}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
     if not path.startswith("/"):
-        typer.secho("路径必须以 / 开头,如 /api/projects", fg=typer.colors.RED, err=True)
+        msg = "路径必须以 / 开头,如 /api/projects"
+        if _looks_like_msys_rewrite(path):
+            msg += (f"(实际收到的是 {path} —— Git Bash 把该参数改写成了 Windows 路径;"
+                    "请改成 `MSYS_NO_PATHCONV=1 td api ...` 再执行,或改用 PowerShell / CMD)")
+        typer.secho(msg, fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
     json_body = None
     if data:

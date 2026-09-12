@@ -53,7 +53,13 @@ td api GET /api/... [--data JSON] [--raw]   # 任意接口透传(逃生舱)
 
 ## Windows / Git Bash 注意
 
-Git Bash(MSYS)会把形似路径的参数改写掉,`td api GET /api/projects` 会被换成 `C:/...` 并报"路径必须以 `/` 开头"。两种解法:加环境变量 `MSYS_NO_PATHCONV=1`,或改用 PowerShell / CMD。其它命令不受影响(它们的参数不是路径)。
+Git Bash(MSYS)会把**以 `/` 开头**的参数当成 POSIX 路径改写好再生效:`td api GET /api/projects` 实际拿到的是 `C:/Program Files/Git/api/projects`,于是报"路径必须以 `/` 开头"(报错里会直接点明这一点)。三种解法任选:
+
+- 加环境变量前缀(**推荐,只作用于这一条命令**):`MSYS_NO_PATHCONV=1 td api GET /api/projects`
+- 改用 PowerShell / CMD(不做这类改写)
+- MSYS2 官方变量:`MSYS2_ARG_CONV_EXCL='*'`
+
+两个反例:**不要**用 `//api/projects` 双斜杠"绕过"——参数确实不被改写,但请求路径变成 `//api/...`,服务端回 404;**也不要**把 `MSYS_NO_PATHCONV=1` 导出到整个会话——`td file up <路径>`、`td doc new --file <路径>` 这些本地路径参数正是靠这层转换才能用,关掉会变成"文件不存在"。其它子命令不受影响(它们的参数是 ID / 名称 / flag,不是 URL 路径)。
 
 ## 文档引用格式规范(写入正文前必读)
 
