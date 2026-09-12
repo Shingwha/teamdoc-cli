@@ -4,9 +4,10 @@
       本包已 uv sync(本脚本用当前解释器 -m teamdoc_cli 调 CLI,故必须用本包 venv 的 python 跑)。
 
 覆盖:login(坏令牌/合法令牌写入隔离 HOME)、whoami、project ls(含"数字 ID 可回填"回归护栏)、
-stdin 建文档、doc show/-o/--meta/edit --append/rm、search、file up/down 二进制往返、file ls、
-file mkdir/rename/mv/rm(含 --is-folder 与走错表提示)、recent、api 透传(--raw、被 Git Bash
-改写参数时的 MSYS 提示)、read-only 令牌写 403、未登录退出码 2。
+project show/join/leave 与 ls --public(**用非管理员账号**:公开项目对非成员才"可加入不可读")、
+doc new --file -、doc show/-o/--meta/edit --append/rm、顶层 search、
+file up/down 二进制往返、file ls(含 --folder)、file mkdir/rename/mv/rm(含 --is-folder 与走错表提示)、
+recent、api 透传(--raw、被 Git Bash 改写参数时的 MSYS 提示)、read-only 令牌写 403、未登录退出码 2。
 """
 
 import json
@@ -130,8 +131,9 @@ check("file ls 接受数字项目 ID", r.returncode == 0, f"rc={r.returncode} {r
 
 print("\n=== 文档 ===")
 CONTENT = "# CLI 冒烟\n\n这是 **stdin** 传入的正文。\n第二行。\n"
-r = td(["doc", "new", PID, "CLI 测试文档", "-"], token=TOKEN_RW, stdin_text=CONTENT)
-check("stdin 建文档", r.returncode == 0 and "已创建" in r.stdout, f"rc={r.returncode} {r.stderr[:120]}")
+r = td(["doc", "new", PID, "CLI 测试文档", "--file", "-"], token=TOKEN_RW, stdin_text=CONTENT)
+check("doc new --file - (stdin 建文档;位置参数正文已下线)", r.returncode == 0 and "已创建" in r.stdout,
+      f"rc={r.returncode} {r.stderr[:120]}")
 doc_id = r.stdout.split("(")[1].split(")")[0] if "(" in r.stdout else ""
 
 r = td(["doc", "show", doc_id], token=TOKEN_RW)
@@ -146,8 +148,8 @@ check("doc edit --append", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100
 r = td(["doc", "show", doc_id], token=TOKEN_RW)
 check("追加内容可见", r.returncode == 0 and "追加的一行。" in r.stdout)
 
-r = td(["doc", "search", "stdin"], token=TOKEN_RW)
-check("search 命中", r.returncode == 0 and "CLI 测试文档" in r.stdout, r.stdout[:120])
+r = td(["search", "stdin"], token=TOKEN_RW)
+check("顶层 td search 命中(原 td doc search)", r.returncode == 0 and "CLI 测试文档" in r.stdout, r.stdout[:120])
 
 r = td(["doc", "rm", doc_id], token=TOKEN_RW, stdin_text=None)
 interactive = r.returncode != 0  # TTY 缺失时 confirm 会失败,属预期;用 --yes 再删
@@ -197,6 +199,11 @@ probe.write_text("probe", encoding="utf-8")
 r = td(["file", "up", PID, str(probe), "--folder", DIR_ID, "--json"], token=TOKEN_RW)
 check("file up --folder", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
 PROBE_ID = json.loads(r.stdout)["id"] if r.returncode == 0 else ""
+
+# 回归护栏:文件夹从位置参数改成 --folder(与 up/mkdir/mv 统一)
+r = td(["file", "ls", PID, "--folder", DIR_ID], token=TOKEN_RW)
+check("file ls --folder 只看该目录", r.returncode == 0 and "probe.txt" in r.stdout,
+      f"rc={r.returncode} {r.stdout[:120]} {r.stderr[:100]}")
 
 r = td(["file", "rename", PROBE_ID, "probe-改名.txt", "--json"], token=TOKEN_RW)
 check("file rename(文件)", r.returncode == 0 and "probe-改名.txt" in r.stdout, f"rc={r.returncode} {r.stderr[:100]}")
@@ -251,7 +258,59 @@ r = subprocess.run([sys.executable, "-m", "teamdoc_cli", "project", "ls"],
                    capture_output=True, text=True, timeout=60, env=env_noauth)
 check("未登录退出码 2", r.returncode == 2, f"rc={r.returncode} {r.stderr[:100]}")
 
+print("\n=== 公开项目(自助加入) ===")
+# 公开项目对**非成员**才是"可加入但不可读",而管理员绕开一切限制(auth.project_role 里
+# is_admin→ADMIN),用管理员测等于没测 —— 这一段必须换个普通账号。
+jmail = f"cli-join-{uuid.uuid4().hex[:6]}@t.local"
+st, ju = call("POST", "/api/users", {"email": jmail, "name": "CLI 加入者", "password": "join12345"}, sid=sid)
+check("建普通用户", st == 200, str(ju)[:80])
+jsid = login(jmail, "join12345")
+st, jp = call("POST", "/api/auth/pats", {"name": "cli-join", "scopes": "read,write"}, sid=jsid)
+check("建普通用户 read,write 令牌", st == 200 and (jp or {}).get("token", "").startswith("tdp_"), str(jp)[:60])
+TOKEN_J = jp["token"]
+
+st, pub = call("POST", "/api/projects", {"name": f"CLI 公开 {uuid.uuid4().hex[:6]}", "description": "d"}, sid=sid)
+check("建待公开项目", st == 200, str(pub)[:80])
+PUB_ID, PUB_NAME = pub["id"], pub["name"]
+call("PATCH", f"/api/projects/{PUB_ID}", {"isPublic": True, "joinRole": "EDITOR"}, sid=sid)
+
+r = td(["project", "ls", "--public"], token=TOKEN_J)
+check("project ls --public 含可加入的公开项目",
+      r.returncode == 0 and str(PUB_ID) in r.stdout and PUB_NAME in r.stdout, r.stdout[:160])
+check("project ls --public 显示加入后角色", "EDITOR" in r.stdout, r.stdout[:160])
+r = td(["project", "ls"], token=TOKEN_J)
+check("project ls 不含未加入的公开项目", r.returncode == 0 and str(PUB_ID) not in r.stdout, r.stdout[:140])
+
+r = td(["doc", "ls", PUB_ID], token=TOKEN_J)
+check("未加入 doc ls → 退出 1 + JOIN_REQUIRED + 指向 td project join",
+      r.returncode == 1 and "JOIN_REQUIRED" in r.stderr and "td project join" in r.stderr,
+      f"rc={r.returncode} {r.stderr[:200]}")
+
+r = td(["project", "join", PUB_ID], token=TOKEN_J)
+check("project join(按 ID)", r.returncode == 0 and "已加入" in r.stdout, f"rc={r.returncode} {r.stderr[:160]}")
+r = td(["project", "ls"], token=TOKEN_J)
+check("加入后进入我的项目", str(PUB_ID) in r.stdout, r.stdout[:140])
+r = td(["doc", "ls", PUB_ID], token=TOKEN_J)
+check("加入后 doc ls 可用", r.returncode == 0, f"rc={r.returncode} {r.stderr[:120]}")
+r = td(["project", "join", PUB_ID], token=TOKEN_J)
+check("重复 join → 退出 1(已是成员)", r.returncode == 1 and "CONFLICT" in r.stderr,
+      f"rc={r.returncode} {r.stderr[:160]}")
+r = td(["project", "show", PUB_ID], token=TOKEN_J)
+check("project show 含可见性与我的角色", r.returncode == 0 and "公开" in r.stdout and "EDITOR" in r.stdout,
+      r.stdout[:200])
+r = td(["project", "leave", PUB_ID], token=TOKEN_J)
+check("project leave", r.returncode == 0 and "已退出" in r.stdout, f"rc={r.returncode} {r.stderr[:160]}")
+r = td(["doc", "ls", PUB_ID], token=TOKEN_J)
+check("退出后回到不可读", r.returncode == 1 and "JOIN_REQUIRED" in r.stderr, f"rc={r.returncode} {r.stderr[:160]}")
+r = td(["project", "join", PUB_NAME], token=TOKEN_J)
+check("project join(按名称解析未加入的公开项目)", r.returncode == 0 and "已加入" in r.stdout,
+      f"rc={r.returncode} {r.stderr[:200]}")
+r = td(["project", "join", PID], token=TOKEN_J)
+check("私有项目 join → 退出 1(未公开)", r.returncode == 1 and "未公开" in r.stderr,
+      f"rc={r.returncode} {r.stderr[:200]}")
+
 print("\n=== 清理 ===")
+call("DELETE", f"/api/projects/{PUB_ID}", sid=sid)
 call("DELETE", f"/api/projects/{PID}", sid=sid)
 
 print("\n" + "=" * 50)

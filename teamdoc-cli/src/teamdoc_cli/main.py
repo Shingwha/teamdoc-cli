@@ -10,6 +10,7 @@ from .commands import doc as doc_mod
 from .commands import file as file_mod
 from .commands import project as project_mod
 from .commands import recent as recent_mod
+from .commands import search as search_mod
 from .output import ensure_utf8
 
 ensure_utf8()
@@ -20,15 +21,16 @@ app = typer.Typer(
     help="TeamDoc 知识库命令行工具(PAT 认证;td login 后使用;td api 可透传任意接口)",
 )
 
-app.add_typer(auth_mod.app, name="auth", help="登录与身份(login/logout/whoami 也可直接用)")
 app.add_typer(project_mod.app, name="project", help="项目")
 app.add_typer(doc_mod.app, name="doc", help="文档")
 app.add_typer(file_mod.app, name="file", help="云空间文件")
 
-# 顶层快捷命令:td login / logout / whoami / recent / api
+# 顶层:身份三命令与跨资源能力(search / recent 同时涉及文档与文件;api 是逃生舱)。
+# 刻意**不再**另挂一个 auth 组 —— 同一份函数注册两遍会让 help 面出现两套名字指同一件事
 app.command()(auth_mod.login)
 app.command()(auth_mod.logout)
 app.command()(auth_mod.whoami)
+app.command()(search_mod.search)
 app.command()(recent_mod.recent)
 app.command()(api_mod.api)
 

@@ -1,4 +1,4 @@
-"""文档:td doc ls / show / new / edit / rm / search。"""
+"""文档:td doc ls / show / new / edit / rm(跨资源的全文搜索是顶层 `td search`)。"""
 
 from __future__ import annotations
 
@@ -68,16 +68,10 @@ def show(doc_id: str = typer.Argument(..., help="文档 ID"),
 @handle
 def new(project_ref: str = typer.Argument(..., help="项目 ID 或名称"),
         title: str = typer.Argument(..., help="标题"),
-        content_arg: str = typer.Argument("", help="`-` 表示正文从 stdin 读;也可给正文文件路径"),
         parent: str = typer.Option("", "--parent", help="父文档 ID(建子文档)"),
-        file: str = typer.Option("", "--file", "-f", help="正文来源:路径或 `-`(stdin);缺省建空文档"),
+        file: str = typer.Option("", "--file", "-f", help="正文来源:路径或 `-`(stdin);裸管道同样生效;缺省建空文档"),
         json_out: bool = typer.Option(False, "--json")):
-    """新建文档(可同时写入正文,支持 cat xx.md | td doc new 项目 "标题" -)"""
-    if content_arg:
-        if file:
-            typer.secho("正文来源重复:位置参数 - 与 --file 二选一", fg=typer.colors.RED, err=True)
-            raise typer.Exit(1)
-        file = content_arg
+    """新建文档(可同时写入正文:cat xx.md | td doc new 项目 "标题" --file -)"""
     # 先读正文、再建文档:反过来时正文读失败(路径写错、磁盘错误)会留下**一篇空文档**
     content = read_text_input(file)
     c = Client()
@@ -98,16 +92,10 @@ def new(project_ref: str = typer.Argument(..., help="项目 ID 或名称"),
 @app.command("edit")
 @handle
 def edit(doc_id: str = typer.Argument(..., help="文档 ID"),
-         content_arg: str = typer.Argument("", help="`-` 表示正文从 stdin 读;也可给正文文件路径"),
-         file: str = typer.Option("", "--file", "-f", help="正文来源:路径或 `-`(stdin)"),
+         file: str = typer.Option("", "--file", "-f", help="正文来源:路径或 `-`(stdin);裸管道同样生效"),
          append: bool = typer.Option(False, "--append", help="追加而非覆盖"),
          json_out: bool = typer.Option(False, "--json")):
-    """写入正文(覆盖,或 --append 追加;支持 cat xx.md | td doc edit 文档ID -)"""
-    if content_arg:
-        if file:
-            typer.secho("正文来源重复:位置参数 - 与 --file 二选一", fg=typer.colors.RED, err=True)
-            raise typer.Exit(1)
-        file = content_arg
+    """写入正文(覆盖,或 --append 追加:cat xx.md | td doc edit 文档ID)"""
     content = read_text_input(file, required=True)
     c = Client()
     if append:
@@ -130,26 +118,3 @@ def rm(doc_id: str = typer.Argument(..., help="文档 ID(整个子树一起进�
         raise typer.Abort()
     Client().request("DELETE", f"/api/docs/{doc_id}")
     print("已删除(可在项目回收站恢复)")
-
-
-@app.command("search")
-@handle
-def search(q: str = typer.Argument(..., help="关键词"),
-           type_: str = typer.Option("all", "--type", help="all | docs | files"),
-           json_out: bool = typer.Option(False, "--json")):
-    """全文搜索(含已参加项目与公开项目)"""
-    r = Client().json("GET", "/api/search", params={"q": q, "type": type_})
-    if json_out:
-        print_json(r)
-        return
-    if r.get("docs"):
-        print("== 文档 ==")
-        table(["ID", "标题", "项目", "片段"],
-              [[d["id"], d["title"], d.get("projectName", ""), (d.get("snippet") or "").replace("\n", " ")]
-               for d in r["docs"]])
-    if r.get("files"):
-        print("== 文件 ==")
-        table(["ID", "文件名", "项目"],
-              [[f["id"], f["name"], f.get("projectName", "")] for f in r["files"]])
-    if not r.get("docs") and not r.get("files"):
-        print("(无结果)")

@@ -1,8 +1,10 @@
-"""登录与身份:td login / logout / whoami。"""
+"""登录与身份:td login / logout / whoami。
+
+它们是**顶层命令**(在 main.py 注册),刻意不另设 `td auth` 子命令组 ——
+同一份函数注册两遍,`td --help` 里就会出现两套名字指同一件事。
+"""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import httpx
 import typer
@@ -11,10 +13,7 @@ from .. import config
 from ..client import Client
 from ..output import handle, print_json
 
-app = typer.Typer(no_args_is_help=True, help="登录与身份")
 
-
-@app.command("login")
 @handle
 def login(server: str = typer.Option("", "--server", "-s", help="服务器地址,如 http://192.168.1.10:8000"),
           token: str = typer.Option("", "--token", "-t", help="访问令牌(tdp_ 开头,网页端创建);缺省交互输入")):
@@ -45,7 +44,6 @@ def login(server: str = typer.Option("", "--server", "-s", help="服务器地址
                     "需要的话到网页端创建 read,write 令牌后重新登录。", fg=typer.colors.YELLOW)
 
 
-@app.command("logout")
 @handle
 def logout():
     """删除本地保存的令牌(令牌本身的吊销在网页端操作)"""
@@ -55,7 +53,6 @@ def logout():
         print("本地本就没有保存的配置。")
 
 
-@app.command("whoami")
 @handle
 def whoami(json_out: bool = typer.Option(False, "--json", help="输出原始 JSON")):
     """当前登录身份与令牌权限"""

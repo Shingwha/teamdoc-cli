@@ -33,7 +33,7 @@ def _with_dir_hint(e: ApiError, is_folder: bool) -> ApiError:
 @app.command("ls")
 @handle
 def ls(project_ref: str = typer.Argument(..., help="项目 ID 或名称"),
-       folder: str = typer.Argument("", help="文件夹 ID(缺省看根目录)"),
+       folder: str = typer.Option("", "--folder", help="文件夹 ID(缺省看根目录)"),
        json_out: bool = typer.Option(False, "--json")):
     """文件列表(自动翻页取全)"""
     c = Client()
