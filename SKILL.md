@@ -13,7 +13,7 @@ td 源码就在本 skill 文件夹的 `teamdoc-cli/` 里(skill 加载时给定�
 
 1. 先探测是否已安装:`td --help`(或 `uv tool list` 找 teamdoc-cli)。
 2. 未安装则:`uv tool install "<base>/teamdoc-cli"`(Windows 注意给路径加引号)。
-3. skill 内代码更新后,升级用:`uv tool install --reinstall "<base>/teamdoc-cli"`。
+3. skill 内代码更新后,升级用:`uv tool install --reinstall "<base>/teamdoc-cli"`(**装的是源码快照**:改完 `src/` 不 reinstall,`td` 跑的还是旧代码)。
 
 ## 登录(一次性)
 
@@ -37,13 +37,23 @@ td doc search <关键词> [--type docs|files]  # 全文搜索
 td file ls <项目ID> [文件夹ID]              # 文件列表(自动翻页)
 td file up <项目ID> <本地路径> [--folder ID]  # 上传(raw body 流式)
 td file down <文件ID> [-o 输出路径]         # 下载
+td file mkdir <项目ID> <名称> [--folder 父夹ID]             # 建文件夹
+td file rename <文件ID> <新名> [--is-folder]                # 重命名
+td file mv <文件ID> --to <项目ID> [--folder 目标夹ID] [--is-folder]  # 移动(项目内/跨项目)
+td file rm <文件ID> [--is-folder] [--permanent] [--yes]     # 删除(默认进回收站)
 td recent [--limit N]                       # 我参与项目的最近动态
 td api GET /api/... [--data JSON] [--raw]   # 任意接口透传(逃生舱)
 ```
 
 通用:`--json` 输出原始 JSON 供脚本解析;正文类命令支持 `cat xx.md | td doc edit <id> -` 管道写法。
+项目参数既可给 **ID**(`td project ls` 打印的数字,原样回填即可)也可给**名称**(需唯一);**文件与文件夹是两套独立编号**,对文件夹操作要加 `--is-folder`(走错表会提示)。
+`td file rm` 默认软删(项目回收站可恢复);`--permanent` 只对回收站中的条目有效且不可恢复。跨项目移动需要**源项目 ADMIN** + 目标项目 EDITOR。
 退出码:0 成功;1 API 错误(stderr 输出 `API 错误 [CODE]: message`);2 未登录/配置缺失。
 注意:用户无关的 WS 协同不走 CLI;令牌丢失只能回网页端重新创建。
+
+## Windows / Git Bash 注意
+
+Git Bash(MSYS)会把形似路径的参数改写掉,`td api GET /api/projects` 会被换成 `C:/...` 并报"路径必须以 `/` 开头"。两种解法:加环境变量 `MSYS_NO_PATHCONV=1`,或改用 PowerShell / CMD。其它命令不受影响(它们的参数不是路径)。
 
 ## 文档引用格式规范(写入正文前必读)
 

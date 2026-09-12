@@ -3,9 +3,10 @@
 前置:临时服务已启动(TEAMDOC_DATA_DIR=临时目录 PORT=8123,见 lite/tests/README.md),
       本包已 uv sync(本脚本用当前解释器 -m teamdoc_cli 调 CLI,故必须用本包 venv 的 python 跑)。
 
-覆盖:login(坏令牌/合法令牌写入隔离 HOME)、whoami、project ls、stdin 建文档、
-doc show/-o/--meta/edit --append/rm、search、file up/down 二进制往返、file ls、recent、
-api 透传(--raw)、read-only 令牌写 403、未登录退出码 2。
+覆盖:login(坏令牌/合法令牌写入隔离 HOME)、whoami、project ls(含"数字 ID 可回填"回归护栏)、
+stdin 建文档、doc show/-o/--meta/edit --append/rm、search、file up/down 二进制往返、file ls、
+file mkdir/rename/mv/rm(含 --is-folder 与走错表提示)、recent、api 透传(--raw)、
+read-only 令牌写 403、未登录退出码 2。
 """
 
 import json
@@ -58,7 +59,12 @@ def login(email, password):
 
 
 def td(args, token=None, server=BASE, home=None, stdin_text=None, cwd=None):
-    """跑一条 CLI;默认用环境变量注入身份,home 隔离时连配置文件也指向临时目录。"""
+    """跑一条 CLI;默认用环境变量注入身份,home 隔离时连配置文件也指向临时目录。
+
+    参数统一转字符串:接口返回的 ID 是整数,调用方直接传进来是自然的写法,
+    在 subprocess 那一层才炸(int 不是合法 argv)属于白摔一次 —— 在唯一出口归一。
+    """
+    args = [str(a) for a in args]
     env = os.environ.copy()
     env.pop("TD_SERVER", None)
     env.pop("TD_PAT", None)
@@ -114,7 +120,13 @@ check("whoami --json(via=scopes)", r.returncode == 0 and json.loads(r.stdout)["a
       r.stdout[:120])
 
 r = td(["project", "ls"], token=TOKEN_RW)
-check("project ls 含测试项目", r.returncode == 0 and PID in r.stdout, r.stdout[:120])
+check("project ls 含测试项目", r.returncode == 0 and str(PID) in r.stdout, r.stdout[:120])
+# 回归护栏:`td project ls` 打印的数字 ID 必须能原样回填给其它命令(资源 ID 整数化后
+# 曾因 CLI 只认 16 位十六进制而全部 404,而冒烟测试当时自己也崩在 int/str 上)
+r = td(["doc", "ls", PID], token=TOKEN_RW)
+check("doc ls 接受数字项目 ID", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
+r = td(["file", "ls", PID], token=TOKEN_RW)
+check("file ls 接受数字项目 ID", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
 
 print("\n=== 文档 ===")
 CONTENT = "# CLI 冒烟\n\n这是 **stdin** 传入的正文。\n第二行。\n"
@@ -165,6 +177,39 @@ check("file down 缺省名取自 Content-Disposition",
 
 r = td(["file", "ls", PID], token=TOKEN_RW)
 check("file ls 含已传文件", r.returncode == 0 and "roundtrip 数据.bin" in r.stdout, r.stdout[:120])
+
+print("\n=== file 写命令(mkdir / rename / mv / rm)===")
+r = td(["file", "mkdir", PID, "冒烟目录", "--json"], token=TOKEN_RW)
+check("file mkdir", r.returncode == 0 and json.loads(r.stdout or "{}").get("id"),
+      f"rc={r.returncode} {r.stderr[:100]}")
+DIR_ID = json.loads(r.stdout)["id"] if r.returncode == 0 else ""
+r = td(["file", "mkdir", PID, "子目录", "--folder", DIR_ID, "--json"], token=TOKEN_RW)
+check("file mkdir --folder(建子目录)", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
+
+probe = Path(tempfile.mkdtemp(prefix="td_cli_probe_")) / "probe.txt"
+probe.write_text("probe", encoding="utf-8")
+r = td(["file", "up", PID, str(probe), "--folder", DIR_ID, "--json"], token=TOKEN_RW)
+check("file up --folder", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
+PROBE_ID = json.loads(r.stdout)["id"] if r.returncode == 0 else ""
+
+r = td(["file", "rename", PROBE_ID, "probe-改名.txt", "--json"], token=TOKEN_RW)
+check("file rename(文件)", r.returncode == 0 and "probe-改名.txt" in r.stdout, f"rc={r.returncode} {r.stderr[:100]}")
+r = td(["file", "rename", DIR_ID, "冒烟目录2", "--is-folder", "--json"], token=TOKEN_RW)
+check("file rename --is-folder", r.returncode == 0 and "冒烟目录2" in r.stdout, f"rc={r.returncode} {r.stderr[:100]}")
+r = td(["file", "mv", PROBE_ID, "--to", PID, "--json"], token=TOKEN_RW)
+check("file mv(项目内)", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
+r = td(["file", "mv", DIR_ID, "--to", PID, "--is-folder", "--json"], token=TOKEN_RW)
+check("file mv --is-folder", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
+
+r = td(["file", "rm", 9999999, "--yes"], token=TOKEN_RW)   # 不存在的 ID:应 404 且提示 --is-folder
+check("file rm 不存在 ID → 404 + --is-folder 提示",
+      r.returncode == 1 and "--is-folder" in r.stderr, f"rc={r.returncode} {r.stderr[:160]}")
+r = td(["file", "rm", PROBE_ID, "--yes"], token=TOKEN_RW)
+check("file rm(软删进回收站)", r.returncode == 0 and "回收站" in r.stdout, f"rc={r.returncode} {r.stderr[:100]}")
+r = td(["file", "rm", PROBE_ID, "--permanent", "--yes"], token=TOKEN_RW)
+check("file rm --permanent(回收站中的可删)", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
+r = td(["file", "rm", DIR_ID, "--is-folder", "--yes"], token=TOKEN_RW)
+check("file rm --is-folder(整棵子树)", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
 
 r = td(["recent"], token=TOKEN_RW)
 check("recent 有内容", r.returncode == 0 and ("最近文件" in r.stdout or "最近文档" in r.stdout), r.stdout[:120])
