@@ -5,9 +5,10 @@
 
 覆盖:login(坏令牌/合法令牌写入隔离 HOME)、whoami、project ls(含"列表打印的 ID 可原样回填"护栏)、
 project show/join/leave 与 ls --public(**用非管理员账号**:公开项目对非成员才"可加入不可读")、
-doc new --file -、doc show/-o/--meta/edit --append/rm、doc mv(项目内/跨项目/权限负例)、顶层 search、
-file up/down 二进制往返、file ls(含 --folder、已分享标记)、file mkdir/rename/mv/share/unshare/rm
-(含 --is-folder 与走错表提示)、recent、read-only 令牌写 403、未登录退出码 2。
+doc new --file -、doc show/-o/--meta/edit --append/--if-version/rm、doc mv(项目内/跨项目/权限负例)、
+顶层 search 与 recent、file up/down 二进制往返、file ls(含 --folder、已分享标记)、
+file mkdir/rename/mv/share/unshare/rm(文件与文件夹都只给 ID、不带类型标记)、
+read-only 令牌写 403、未登录退出码 2。
 """
 
 import json
@@ -126,8 +127,7 @@ check("whoami --json(via=scopes)", r.returncode == 0 and json.loads(r.stdout)["a
 
 r = td(["project", "ls"], token=TOKEN_RW)
 check("project ls 含测试项目", r.returncode == 0 and str(PID) in r.stdout, r.stdout[:120])
-# 回归护栏:`td project ls` 打印的 ID 必须能原样回填给其它命令(引用格式在传输层漂一次
-# 就会全部 404,而服务端与 CLI 各自的用例都还是绿的)
+# 护栏:`td project ls` 打印的 ID 必须能原样回填给其它命令
 r = td(["doc", "ls", PID], token=TOKEN_RW)
 check("doc ls 接受列表里的项目 ID", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
 r = td(["file", "ls", PID], token=TOKEN_RW)
@@ -136,7 +136,7 @@ check("file ls 接受列表里的项目 ID", r.returncode == 0, f"rc={r.returnco
 print("\n=== 文档 ===")
 CONTENT = "# CLI 冒烟\n\n这是 **stdin** 传入的正文。\n第二行。\n"
 r = td(["doc", "new", PID, "CLI 测试文档", "--file", "-"], token=TOKEN_RW, stdin_text=CONTENT)
-check("doc new --file - (stdin 建文档;位置参数正文已下线)", r.returncode == 0 and "已创建" in r.stdout,
+check("doc new --file -(stdin 建文档)", r.returncode == 0 and "已创建" in r.stdout,
       f"rc={r.returncode} {r.stderr[:120]}")
 doc_id = r.stdout.split("(")[1].split(")")[0] if "(" in r.stdout else ""
 
@@ -153,7 +153,27 @@ r = td(["doc", "show", doc_id], token=TOKEN_RW)
 check("追加内容可见", r.returncode == 0 and "追加的一行。" in r.stdout)
 
 r = td(["search", "stdin"], token=TOKEN_RW)
-check("顶层 td search 命中(原 td doc search)", r.returncode == 0 and "CLI 测试文档" in r.stdout, r.stdout[:120])
+check("顶层 td search 命中", r.returncode == 0 and "CLI 测试文档" in r.stdout, r.stdout[:120])
+
+# 写入基线:对 PAT 服务端默认整篇覆盖,--if-version 是唯一的乐观锁入口
+# (这一段会整篇覆盖正文,所以放在"正文内容还在被别的断言用到"的检查之后)
+r = td(["doc", "show", doc_id, "--json"], token=TOKEN_RW)
+v1 = json.loads(r.stdout)["version"]
+r = td(["doc", "edit", doc_id, "--if-version", v1], token=TOKEN_RW, stdin_text="基于 v1 改写")
+check("doc edit --if-version 命中 → 成功", r.returncode == 0, f"rc={r.returncode} {r.stderr[:120]}")
+r = td(["doc", "show", doc_id, "--json"], token=TOKEN_RW)
+v2 = json.loads(r.stdout)["version"]
+check("版本号 +1", v2 == v1 + 1, f"{v1} -> {v2}")
+r = td(["doc", "edit", doc_id, "--if-version", v1], token=TOKEN_RW, stdin_text="拿着旧版覆盖")
+check("doc edit 过期基线 → 退出 1 + CONFLICT + 报出服务端当前版本",
+      r.returncode == 1 and "CONFLICT" in r.stderr and f"v{v2}" in r.stderr,
+      f"rc={r.returncode} {r.stderr[:200]}")
+r = td(["doc", "show", doc_id, "--json"], token=TOKEN_RW)
+check("冲突后没有被写进去",
+      json.loads(r.stdout)["version"] == v2 and "拿着旧版覆盖" not in r.stdout, r.stdout[:120])
+r = td(["doc", "edit", doc_id, "--append", "--if-version", v2], token=TOKEN_RW, stdin_text="x")
+check("--append 与 --if-version 互斥(退出 2)",
+      r.returncode == 2 and "--if-version" in r.stderr, f"rc={r.returncode} {r.stderr[:160]}")
 
 r = td(["doc", "rm", doc_id], token=TOKEN_RW, stdin_text=None)
 interactive = r.returncode != 0  # TTY 缺失时 confirm 会失败,属预期;用 --yes 再删
@@ -184,11 +204,10 @@ r = td(["doc", "show", mv_id, "--json"], token=TOKEN_RW)
 check("跨项目后归属已改", json.loads(r.stdout or "{}").get("projectId") == DST, r.stdout[:120])
 r = td(["doc", "ls", PID], token=TOKEN_RW)
 check("源项目文档树里已没有它", "要移动的文档" not in r.stdout, r.stdout[:120])
-# 形状非法/不存在:两条路径分清
-# 旧式数字目标:项目引用解析不猜 ID 形状 —— 服务端说"不是合法 ID"就回落到名称匹配,
-# 于是报"找不到项目"而不是把数字当 id 打过去(见 project.resolve_project)
+# 项目引用解析不猜 ID 形状:服务端说"不是合法 ID"就回落到名称匹配,
+# 于是报"找不到项目",而不是把数字当 ID 打过去(见 refs.project)
 r = td(["doc", "mv", mv_id, "--to", "9999999", "--yes"], token=TOKEN_RW)
-check("doc mv 旧式数字目标 → 找不到项目(回落到名称匹配,不误命中)",
+check("doc mv 非法形状的项目引用 → 找不到项目(回落到名称匹配,不误命中)",
       r.returncode == 1 and "找不到项目" in r.stderr, f"rc={r.returncode} {r.stderr[:160]}")
 
 # 正文来源读失败必须在建文档**之前**失败,否则会留下一篇空文档
@@ -255,32 +274,41 @@ r = td(["file", "up", PID, str(probe), "--folder", DIR_ID, "--json"], token=TOKE
 check("file up --folder", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
 PROBE_ID = json.loads(r.stdout)["id"] if r.returncode == 0 else ""
 
-# 回归护栏:文件夹从位置参数改成 --folder(与 up/mkdir/mv 统一)
 r = td(["file", "ls", PID, "--folder", DIR_ID], token=TOKEN_RW)
 check("file ls --folder 只看该目录", r.returncode == 0 and "probe.txt" in r.stdout,
       f"rc={r.returncode} {r.stdout[:120]} {r.stderr[:100]}")
 
+# 文件与文件夹是两套编号,但用户手里只有一个 ID:改名 / 移动 / 删除都得自己认出类型
 r = td(["file", "rename", PROBE_ID, "probe-改名.txt", "--json"], token=TOKEN_RW)
-check("file rename(文件)", r.returncode == 0 and "probe-改名.txt" in r.stdout, f"rc={r.returncode} {r.stderr[:100]}")
-r = td(["file", "rename", DIR_ID, "冒烟目录2", "--is-folder", "--json"], token=TOKEN_RW)
-check("file rename --is-folder", r.returncode == 0 and "冒烟目录2" in r.stdout, f"rc={r.returncode} {r.stderr[:100]}")
+check("file rename(文件 ID)", r.returncode == 0 and "probe-改名.txt" in r.stdout,
+      f"rc={r.returncode} {r.stderr[:100]}")
+r = td(["file", "rename", DIR_ID, "冒烟目录2", "--json"], token=TOKEN_RW)
+check("folder rename(文件夹 ID,不带类型标记)", r.returncode == 0 and "冒烟目录2" in r.stdout,
+      f"rc={r.returncode} {r.stderr[:100]}")
 r = td(["file", "mv", PROBE_ID, "--to", PID, "--json"], token=TOKEN_RW)
 check("file mv(项目内)", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
-r = td(["file", "mv", DIR_ID, "--to", PID, "--is-folder", "--json"], token=TOKEN_RW)
-check("file mv --is-folder", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
+r = td(["file", "mv", DIR_ID, "--to", PID, "--json"], token=TOKEN_RW)
+check("folder mv(文件夹 ID,不带类型标记)", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
 
-r = td(["file", "rm", ABSENT_ID, "--yes"], token=TOKEN_RW)   # 不存在的 ID:应 404 且提示 --is-folder
-check("file rm 不存在 ID → 404 + --is-folder 提示",
-      r.returncode == 1 and "--is-folder" in r.stderr, f"rc={r.returncode} {r.stderr[:160]}")
-r = td(["file", "rm", "9999999", "--yes"], token=TOKEN_RW)   # 旧式数字 ID:形状非法
-check("file rm 旧式数字 ID → VALIDATION(形状非法,不是 404)",
+r = td(["file", "down", ABSENT_ID, "-o", tempfile.mkdtemp(prefix="td_cli_absent_")], token=TOKEN_RW)
+check("file down 不存在的 ID → 干净报错(不是 httpx 的裸 traceback)",
+      r.returncode == 1 and "NOT_FOUND" in r.stderr and "Traceback" not in r.stderr,
+      f"rc={r.returncode} {r.stderr[:200]}")
+r = td(["file", "rm", ABSENT_ID, "--yes"], token=TOKEN_RW)
+check("file rm 不存在 ID(形状合法)→ 404 且指明「文件或文件夹」",
+      r.returncode == 1 and "文件或文件夹" in r.stderr, f"rc={r.returncode} {r.stderr[:160]}")
+r = td(["file", "rm", "9999999", "--yes"], token=TOKEN_RW)
+check("file rm 形状非法的 ID → VALIDATION(不触发换表重试)",
       r.returncode == 1 and "VALIDATION" in r.stderr, f"rc={r.returncode} {r.stderr[:160]}")
 r = td(["file", "rm", PROBE_ID, "--yes"], token=TOKEN_RW)
 check("file rm(软删进回收站)", r.returncode == 0 and "回收站" in r.stdout, f"rc={r.returncode} {r.stderr[:100]}")
 r = td(["file", "rm", PROBE_ID, "--permanent", "--yes"], token=TOKEN_RW)
 check("file rm --permanent(回收站中的可删)", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
-r = td(["file", "rm", DIR_ID, "--is-folder", "--yes"], token=TOKEN_RW)
-check("file rm --is-folder(整棵子树)", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
+r = td(["file", "rm", DIR_ID, "--yes"], token=TOKEN_RW)
+check("folder rm(整棵子树,不带类型标记)", r.returncode == 0 and "回收站" in r.stdout,
+      f"rc={r.returncode} {r.stderr[:100]}")
+r = td(["file", "rm", DIR_ID, "--permanent", "--yes"], token=TOKEN_RW)
+check("folder rm --permanent", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
 
 r = td(["recent"], token=TOKEN_RW)
 check("recent 有内容", r.returncode == 0 and ("最近文件" in r.stdout or "最近文档" in r.stdout), r.stdout[:120])
