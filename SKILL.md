@@ -1,6 +1,6 @@
 ---
 name: teamdoc
-description: TeamDoc 知识库命令行工具(td)。安装或升级 td、用命令行操作知识库(令牌登录、项目列表/详情/自助加入与退出、文档创建/读取/编辑/删除/搜索、云空间文件上传下载、最近动态、API 透传)时使用。涉及 td 命令、TeamDoc CLI、知识库终端操作时触发。
+description: TeamDoc 知识库命令行工具(td)。安装或升级 td、用命令行操作知识库(令牌登录、项目列表/详情/自助加入与退出、文档创建/读取/编辑/移动/删除/搜索、云空间文件上传下载分享移动、最近动态)时使用。涉及 td 命令、TeamDoc CLI、知识库终端操作时触发。
 ---
 
 # TeamDoc CLI(td)
@@ -35,6 +35,7 @@ td doc ls <项目ID>                          # 文档树
 td doc show <文档ID> [-o 文件] [--meta]     # 读正文(stdout/文件)
 td doc new <项目ID> <标题> [--parent ID] [--file 路径|-]   # 建文档,可带正文
 td doc edit <文档ID> [--file 路径|-] [--append]            # 覆盖/追加正文
+td doc mv <文档ID> --to <项目ID|名称> [--parent 父文档ID]   # 移动(项目内/跨项目)
 td doc rm <文档ID> [--yes]                  # 删除(进回收站)
 td search <关键词> [--type docs|files]      # 全文搜索(文档 + 文件,跨项目)
 td file ls <项目ID> [--folder 文件夹ID]      # 文件列表(自动翻页)
@@ -43,42 +44,33 @@ td file down <文件ID> [-o 输出路径]         # 下载
 td file mkdir <项目ID> <名称> [--folder 父夹ID]             # 建文件夹
 td file rename <文件ID> <新名> [--is-folder]                # 重命名
 td file mv <文件ID> --to <项目ID> [--folder 目标夹ID] [--is-folder]  # 移动(项目内/跨项目)
+td file share <文件ID> [--expire 天数]      # 建立分享链接(无需登录即可下载)
+td file unshare <文件ID>                   # 吊销分享链接
 td file rm <文件ID> [--is-folder] [--permanent] [--yes]     # 删除(默认进回收站)
 td recent [--limit N]                       # 我参与项目的最近动态
-td api GET /api/... [--data JSON] [--raw]   # 任意接口透传(逃生舱)
 ```
 
-命令结构:三个资源组(project / doc / file)+ 顶层的身份三命令与**跨资源**能力(search / recent / api;
+命令结构:三个资源组(project / doc / file)+ 顶层的身份三命令与**跨资源**能力(search / recent;
 search 同时搜文档与文件,所以不挂在 `td doc` 下)。
 通用:`--json` 输出原始 JSON 供脚本解析;正文只有一个来源通道 —— `--file 路径|-`,或裸管道
 (`cat xx.md | td doc edit <id>`)。
-项目参数既可给 **ID**(`td project ls` 打印的数字,原样回填即可)也可给**名称**(需唯一);项目内定位一律用选项
+项目参数既可给 **ID**(`td project ls` 打印的那串字符,原样回填即可)也可给**名称**(需唯一);项目内定位一律用选项
 (`--parent` / `--folder`)。**文件与文件夹是两套独立编号**,对文件夹操作要加 `--is-folder`(走错表会提示)。
 **公开项目加入前看不到任何内容**(搜索也搜不到):`td project ls --public` 找、`td project join` 加入,
 加入后的角色由项目设置决定(只读成员 / 编辑者)。
-`td file rm` 默认软删(项目回收站可恢复);`--permanent` 只对回收站中的条目有效且不可恢复。跨项目移动需要**源项目 ADMIN** + 目标项目 EDITOR。
+`td file rm` 默认软删(项目回收站可恢复);`--permanent` 只对回收站中的条目有效且不可恢复。跨项目移动需要**源项目 ADMIN** + 目标项目 EDITOR。`td doc mv` 跨项目时只搬文档,**不会带走附件**(正文引用的文件留在原项目),命令会先打印「哪些文件会留下」再让你确认。
 退出码:0 成功;1 API 错误(stderr 输出 `API 错误 [CODE]: message`);2 未登录/配置缺失。
 注意:用户无关的 WS 协同不走 CLI;令牌丢失只能回网页端重新创建。
 
-## Windows / Git Bash 注意
-
-Git Bash(MSYS)会把**以 `/` 开头**的参数当成 POSIX 路径改写好再生效:`td api GET /api/projects` 实际拿到的是 `C:/Program Files/Git/api/projects`,于是报"路径必须以 `/` 开头"(报错里会直接点明这一点)。三种解法任选:
-
-- 加环境变量前缀(**推荐,只作用于这一条命令**):`MSYS_NO_PATHCONV=1 td api GET /api/projects`
-- 改用 PowerShell / CMD(不做这类改写)
-- MSYS2 官方变量:`MSYS2_ARG_CONV_EXCL='*'`
-
-两个反例:**不要**用 `//api/projects` 双斜杠"绕过"——参数确实不被改写,但请求路径变成 `//api/...`,服务端回 404;**也不要**把 `MSYS_NO_PATHCONV=1` 导出到整个会话——`td file up <路径>`、`td doc new --file <路径>` 这些本地路径参数正是靠这层转换才能用,关掉会变成"文件不存在"。其它子命令不受影响(它们的参数是 ID / 名称 / flag,不是 URL 路径)。
-
 ## 文档引用格式规范(写入正文前必读)
 
-TeamDoc 的引用是**功能性依赖**——服务端在正文里精确匹配 `/api/files/{id}/download` 来判定"被引用"(云空间的被引用徽标、删除警告都靠它)。往文档里写 Markdown 时必须用以下格式,**不要保留本地相对引用**(`![](./assets/x.png)` 之类在 TeamDoc 里是死链):
+TeamDoc 的引用是**功能性依赖**——服务端在正文里精确匹配这些链接来判定"被引用"与反向链接(云空间的被引用徽标、删除警告、文档反链都靠它)。引用里只出现资源自己的 ID,不含项目。往文档里写 Markdown 时必须用以下格式,**不要保留本地相对引用**(`![](./assets/x.png)` 之类在 TeamDoc 里是死链):
 
 | 引用什么 | 格式 |
 |---|---|
 | 图片(站内显示) | `![名称](/api/files/{文件ID}/download?inline=1)` |
 | 附件(点击下载) | `[名称](/api/files/{文件ID}/download)` |
-| 引用另一篇文档 | `[@标题](teamdoc://doc/{项目ID}/{文档ID})` |
+| 引用另一篇文档 | `[@标题](teamdoc://doc/{文档ID})` |
 | 引用另一个文件 | `[@名称](teamdoc://file/{文件ID})` |
 
 用 `td file up --json` 拿文件 ID;`td search` 查文档 ID。外部 http(s) 链接保持原样即可。

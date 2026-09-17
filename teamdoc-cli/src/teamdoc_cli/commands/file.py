@@ -70,7 +70,7 @@ def ls(project_ref: str = typer.Argument(..., help="项目 ID 或名称"),
               [[f["id"], f["name"], fmt_size(f.get("size")), fmt_time(f.get("createdAt")),
                 " ".join(filter(None, [
                     "被引用" if f.get("referenced") else "",
-                    "公开" if f.get("isPublic") else "",
+                    "已分享" if f.get("shared") else "",
                     # 能不能写进正文当图片:判据与服务端同一份(图片类型 **且** inline 白名单放行),
                     # 别按本地文件后缀猜 —— 导入 Markdown 时正是靠它决定 ![]() 还是 []()
                     "可内嵌" if is_embeddable(f) else "",
@@ -182,6 +182,36 @@ def mv(item_id: str = typer.Argument(..., help="文件 ID(文件夹加 --is-fold
         print_json(r)
     else:
         print(f"已移动到「{p['name']}」" + (f" / 文件夹 {folder}" if folder else " 根目录"))
+
+
+@app.command("share")
+@handle
+def share(file_id: str = typer.Argument(..., help="文件 ID"),
+          expire: int = typer.Option(0, "--expire", help="有效天数(缺省 0 = 长期有效)"),
+          json_out: bool = typer.Option(False, "--json")):
+    """建立分享链接(持有链接的人无需登录即可下载;重复调用会换新链接,旧的立即失效)"""
+    c = Client()
+    body = {"expireDays": expire} if expire else {}
+    r = c.json("POST", f"/api/files/{file_id}/share", json_body=body)
+    url = c.server + r["url"]
+    if json_out:
+        print_json({**r, "url": url})
+    else:
+        print(f"分享链接:{url}")
+        print("有效期  : " + (r["expiresAt"] or "长期有效"))
+        print("吊销    : td file unshare " + file_id)
+
+
+@app.command("unshare")
+@handle
+def unshare(file_id: str = typer.Argument(..., help="文件 ID"),
+            json_out: bool = typer.Option(False, "--json")):
+    """吊销分享链接(已发出的链接立刻失效;文件本身不受影响)"""
+    r = Client().json("DELETE", f"/api/files/{file_id}/share")
+    if json_out:
+        print_json(r)
+    else:
+        print("已吊销分享链接(此前发出的链接已失效)")
 
 
 @app.command("rm")

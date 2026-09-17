@@ -45,14 +45,15 @@ TD_SERVER=http://host:8000 TD_PAT=tdp_xxx td search 关键词
 | `td doc show <文档ID> [-o 文件] [--meta]` | 读正文;`--meta` 只看元数据 |
 | `td doc new <项目> <标题> [--parent ID] [--file 路径\|-]` | 建文档,可同时写正文 |
 | `td doc edit <文档ID> [--file 路径\|-] [--append]` | 覆盖 / 追加正文 |
+| `td doc mv <文档ID> --to <项目> [--parent 父文档ID]` | 移动文档(项目内 / 跨项目) |
 | `td doc rm <文档ID> [--yes]` | 删除(进回收站,可恢复) |
 | `td search <关键词> [--type docs\|files]` | 全文搜索(文档 + 文件) |
 | `td file ls <项目> [--folder 文件夹ID]` | 文件列表(自动翻页) |
 | `td file up <项目> <本地路径> [--folder ID]` | 上传(raw body 流式) |
 | `td file down <文件ID> [-o 路径]` | 下载 |
 | `td file mkdir / rename / mv / rm` | 建文件夹 / 重命名 / 移动 / 删除(文件夹加 `--is-folder`) |
+| `td file share / unshare <文件ID> [--expire 天数]` | 建立 / 吊销分享链接(无需登录即可下载) |
 | `td recent [-n N]` | 我参与项目的最近动态 |
-| `td api <METHOD> /api/... [-d JSON] [--raw]` | 任意接口透传(逃生舱) |
 
 管道示例:
 

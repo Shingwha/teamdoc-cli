@@ -3,11 +3,11 @@
 前置:临时服务已启动(TEAMDOC_DATA_DIR=临时目录 PORT=8123,见 lite/tests/README.md),
       本包已 uv sync(本脚本用当前解释器 -m teamdoc_cli 调 CLI,故必须用本包 venv 的 python 跑)。
 
-覆盖:login(坏令牌/合法令牌写入隔离 HOME)、whoami、project ls(含"数字 ID 可回填"回归护栏)、
+覆盖:login(坏令牌/合法令牌写入隔离 HOME)、whoami、project ls(含"列表打印的 ID 可原样回填"护栏)、
 project show/join/leave 与 ls --public(**用非管理员账号**:公开项目对非成员才"可加入不可读")、
-doc new --file -、doc show/-o/--meta/edit --append/rm、顶层 search、
-file up/down 二进制往返、file ls(含 --folder)、file mkdir/rename/mv/rm(含 --is-folder 与走错表提示)、
-recent、api 透传(--raw、被 Git Bash 改写参数时的 MSYS 提示)、read-only 令牌写 403、未登录退出码 2。
+doc new --file -、doc show/-o/--meta/edit --append/rm、doc mv(项目内/跨项目/权限负例)、顶层 search、
+file up/down 二进制往返、file ls(含 --folder、已分享标记)、file mkdir/rename/mv/share/unshare/rm
+(含 --is-folder 与走错表提示)、recent、read-only 令牌写 403、未登录退出码 2。
 """
 
 import json
@@ -22,6 +22,10 @@ from pathlib import Path
 
 BASE = os.environ.get("TD_BASE", "http://127.0.0.1:8123")
 ADMIN_EMAIL, ADMIN_PWD = "admin@teamdoc.local", "admin12345"
+
+# 形状合法但永不存在的 id(全 0 的 ULID):测"资源不存在 → 404"。
+# 随手写的数字(如 9999999)是**形状非法** → 400,两条路径别混。
+ABSENT_ID = "0" * 26
 FAIL, PASS = [], []
 
 
@@ -122,12 +126,12 @@ check("whoami --json(via=scopes)", r.returncode == 0 and json.loads(r.stdout)["a
 
 r = td(["project", "ls"], token=TOKEN_RW)
 check("project ls 含测试项目", r.returncode == 0 and str(PID) in r.stdout, r.stdout[:120])
-# 回归护栏:`td project ls` 打印的数字 ID 必须能原样回填给其它命令(资源 ID 整数化后
-# 曾因 CLI 只认 16 位十六进制而全部 404,而冒烟测试当时自己也崩在 int/str 上)
+# 回归护栏:`td project ls` 打印的 ID 必须能原样回填给其它命令(引用格式在传输层漂一次
+# 就会全部 404,而服务端与 CLI 各自的用例都还是绿的)
 r = td(["doc", "ls", PID], token=TOKEN_RW)
-check("doc ls 接受数字项目 ID", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
+check("doc ls 接受列表里的项目 ID", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
 r = td(["file", "ls", PID], token=TOKEN_RW)
-check("file ls 接受数字项目 ID", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
+check("file ls 接受列表里的项目 ID", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
 
 print("\n=== 文档 ===")
 CONTENT = "# CLI 冒烟\n\n这是 **stdin** 传入的正文。\n第二行。\n"
@@ -155,6 +159,37 @@ r = td(["doc", "rm", doc_id], token=TOKEN_RW, stdin_text=None)
 interactive = r.returncode != 0  # TTY 缺失时 confirm 会失败,属预期;用 --yes 再删
 r = td(["doc", "rm", doc_id, "--yes"], token=TOKEN_RW)
 check("doc rm --yes", r.returncode == 0 and "已删除" in r.stdout, f"rc={r.returncode} {r.stderr[:100]}")
+
+print("\n=== 文档移动(doc mv)===")
+st, dst_proj = call("POST", "/api/projects",
+                    {"name": f"CLI 移动目标 {uuid.uuid4().hex[:6]}", "description": "d"}, sid=sid)
+check("建移动目标项目", st == 200, str(dst_proj)[:80])
+DST = dst_proj["id"] if st == 200 else ""
+r = td(["doc", "new", PID, "要移动的文档", "--file", "-"], token=TOKEN_RW, stdin_text="# 正文\n\n带一段说明。")
+check("doc new(待移动)", r.returncode == 0, f"rc={r.returncode} {r.stderr[:120]}")
+mv_id = r.stdout.split("(")[1].split(")")[0] if "(" in r.stdout else ""
+
+# 项目内:只改位置(父文档为空 → 落在项目根),不出项目
+r = td(["doc", "mv", mv_id, "--to", PID, "--yes"], token=TOKEN_RW)
+check("doc mv(项目内)", r.returncode == 0 and "已移动" in r.stdout, f"rc={r.returncode} {r.stderr[:160]}")
+# 跨项目:没有确认 stdin 时应中止(一次都不许动),--yes 才执行
+r = td(["doc", "mv", mv_id, "--to", DST], token=TOKEN_RW, stdin_text="")
+check("doc mv 跨项目未确认 → 中止且未移动",
+      r.returncode != 0, f"rc={r.returncode} {r.stdout[:80]} {r.stderr[:80]}")
+r = td(["doc", "show", mv_id, "--json"], token=TOKEN_RW)
+check("中止后文档仍在原项目", json.loads(r.stdout or "{}").get("projectId") == PID, r.stdout[:120])
+r = td(["doc", "mv", mv_id, "--to", DST, "--yes"], token=TOKEN_RW)
+check("doc mv 跨项目 --yes", r.returncode == 0, f"rc={r.returncode} {r.stderr[:160]}")
+r = td(["doc", "show", mv_id, "--json"], token=TOKEN_RW)
+check("跨项目后归属已改", json.loads(r.stdout or "{}").get("projectId") == DST, r.stdout[:120])
+r = td(["doc", "ls", PID], token=TOKEN_RW)
+check("源项目文档树里已没有它", "要移动的文档" not in r.stdout, r.stdout[:120])
+# 形状非法/不存在:两条路径分清
+# 旧式数字目标:项目引用解析不猜 ID 形状 —— 服务端说"不是合法 ID"就回落到名称匹配,
+# 于是报"找不到项目"而不是把数字当 id 打过去(见 project.resolve_project)
+r = td(["doc", "mv", mv_id, "--to", "9999999", "--yes"], token=TOKEN_RW)
+check("doc mv 旧式数字目标 → 找不到项目(回落到名称匹配,不误命中)",
+      r.returncode == 1 and "找不到项目" in r.stderr, f"rc={r.returncode} {r.stderr[:160]}")
 
 # 正文来源读失败必须在建文档**之前**失败,否则会留下一篇空文档
 r = td(["doc", "new", PID, "不应存在的空文档", "--file", "C:/不存在的路径/x.md"], token=TOKEN_RW)
@@ -186,6 +221,26 @@ check("file down 缺省名取自 Content-Disposition",
 r = td(["file", "ls", PID], token=TOKEN_RW)
 check("file ls 含已传文件", r.returncode == 0 and "roundtrip 数据.bin" in r.stdout, r.stdout[:120])
 
+print("\n=== 文件分享(share / unshare)===")
+r = td(["file", "share", fid, "--json"], token=TOKEN_RW)
+share = json.loads(r.stdout or "{}")
+check("file share --json 返回链接", r.returncode == 0 and "/api/share/" in (share.get("url") or ""),
+      f"rc={r.returncode} {r.stderr[:120]}")
+share_url = share.get("url") or ""
+# 匿名下载:不带任何 Cookie / 令牌
+anon = urllib.request.urlopen(share_url.replace(BASE, BASE, 1), timeout=30).read()     if share_url else b""
+check("分享链接匿名下载内容一致", anon == payload, f"{len(anon)} bytes")
+r = td(["file", "unshare", fid], token=TOKEN_RW)
+check("file unshare", r.returncode == 0 and "已吊销" in r.stdout, f"rc={r.returncode} {r.stderr[:120]}")
+try:
+    urllib.request.urlopen(share_url, timeout=30)
+    gone = False
+except urllib.error.HTTPError as e:
+    gone = e.code == 404
+check("吊销后链接失效(404)", gone, share_url)
+r = td(["file", "ls", PID], token=TOKEN_RW)
+check("file ls 无「已分享」标记", "已分享" not in r.stdout, r.stdout[:160])
+
 print("\n=== file 写命令(mkdir / rename / mv / rm)===")
 r = td(["file", "mkdir", PID, "冒烟目录", "--json"], token=TOKEN_RW)
 check("file mkdir", r.returncode == 0 and json.loads(r.stdout or "{}").get("id"),
@@ -214,9 +269,12 @@ check("file mv(项目内)", r.returncode == 0, f"rc={r.returncode} {r.stderr[:10
 r = td(["file", "mv", DIR_ID, "--to", PID, "--is-folder", "--json"], token=TOKEN_RW)
 check("file mv --is-folder", r.returncode == 0, f"rc={r.returncode} {r.stderr[:100]}")
 
-r = td(["file", "rm", 9999999, "--yes"], token=TOKEN_RW)   # 不存在的 ID:应 404 且提示 --is-folder
+r = td(["file", "rm", ABSENT_ID, "--yes"], token=TOKEN_RW)   # 不存在的 ID:应 404 且提示 --is-folder
 check("file rm 不存在 ID → 404 + --is-folder 提示",
       r.returncode == 1 and "--is-folder" in r.stderr, f"rc={r.returncode} {r.stderr[:160]}")
+r = td(["file", "rm", "9999999", "--yes"], token=TOKEN_RW)   # 旧式数字 ID:形状非法
+check("file rm 旧式数字 ID → VALIDATION(形状非法,不是 404)",
+      r.returncode == 1 and "VALIDATION" in r.stderr, f"rc={r.returncode} {r.stderr[:160]}")
 r = td(["file", "rm", PROBE_ID, "--yes"], token=TOKEN_RW)
 check("file rm(软删进回收站)", r.returncode == 0 and "回收站" in r.stdout, f"rc={r.returncode} {r.stderr[:100]}")
 r = td(["file", "rm", PROBE_ID, "--permanent", "--yes"], token=TOKEN_RW)
@@ -226,22 +284,6 @@ check("file rm --is-folder(整棵子树)", r.returncode == 0, f"rc={r.returncode
 
 r = td(["recent"], token=TOKEN_RW)
 check("recent 有内容", r.returncode == 0 and ("最近文件" in r.stdout or "最近文档" in r.stdout), r.stdout[:120])
-
-print("\n=== api 透传 ===")
-r = td(["api", "GET", "/api/auth/me"], token=TOKEN_RW)
-check("api GET JSON", r.returncode == 0 and json.loads(r.stdout)["user"]["email"] == ADMIN_EMAIL, r.stdout[:100])
-# 模拟 Git Bash 改写后的参数(MSYS 会把 /api/... 换成 C:/Program Files/Git/api/...)
-r = td(["api", "GET", "C:/Program Files/Git/api/projects"], token=TOKEN_RW)
-check("api 参数被 MSYS 改写 → 给出 MSYS_NO_PATHCONV 提示",
-      r.returncode == 1 and "MSYS_NO_PATHCONV" in r.stderr, f"rc={r.returncode} {r.stderr[:180]}")
-r = td(["api", "GET", f"/api/files/{fid}/download", "--raw"], token=TOKEN_RW)
-check("api --raw 透传二进制", r.returncode == 0 and r.stdout.encode("utf-8", "surrogateescape") == payload or True, "")
-# text 模式 subprocess 会破坏二进制;--raw 的逐字节校验改用二进制子进程单独跑:
-env = os.environ.copy()
-env.update({"TD_SERVER": BASE, "TD_PAT": TOKEN_RW})
-binr = subprocess.run([sys.executable, "-m", "teamdoc_cli", "api", "GET", f"/api/files/{fid}/download", "--raw"],
-                      capture_output=True, timeout=120, env=env)
-check("api --raw 逐字节一致", binr.returncode == 0 and binr.stdout == payload, f"rc={binr.returncode}")
 
 print("\n=== 权限与退出码 ===")
 # 403 前置顺序:服务端先校验文档存在性(404)再校验写权限,所以必须用真实存在的文档

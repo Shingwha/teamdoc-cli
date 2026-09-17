@@ -116,6 +116,43 @@ def edit(doc_id: str = typer.Argument(..., help="文档 ID"),
         print(f"{action}(版本计数:{r.get('version', '-')})")
 
 
+@app.command("mv")
+@handle
+def mv(doc_id: str = typer.Argument(..., help="文档 ID(整棵子树一起移动)"),
+       to: str = typer.Option(..., "--to", help="目标项目 ID 或名称"),
+       parent: str = typer.Option("", "--parent", help="目标父文档 ID(缺省落在目标项目根)"),
+       yes: bool = typer.Option(False, "--yes", "-y", help="跳过确认(跨项目时的提示)"),
+       json_out: bool = typer.Option(False, "--json")):
+    """移动文档(项目内调整位置或跨项目转移;只改归属,不复制内容)
+
+    跨项目移动**不会带走附件**:文件按自己的项目归属,正文引用的文件仍留在原项目。
+    这一步会先用 move-check 问清服务端"有多少篇文档会跟着走、哪些文件会留下",
+    确认后再动手 —— 不这么做,用户看到的会是"搬过去之后附件全打不开了"。
+    """
+    c = Client()
+    p = resolve_project(c, to)
+    chk = c.json("GET", f"/api/docs/{doc_id}/move-check",
+                 params={"projectId": p["id"], "parentId": parent or ""})
+    body: dict = {"projectId": p["id"]}
+    if parent:
+        body["parentId"] = parent
+    if not json_out:
+        print(f"将移动到「{p['name']}」" + (f" / 文档 {parent}" if parent else " 根目录")
+              + f",共 {chk.get('docs', 1)} 篇文档(含子文档)")
+        left = chk.get("foreignFiles") or []
+        if left:
+            names = "、".join(f"「{x['name']}」" for x in left[:3])
+            more = f" 等 {len(left)} 个" if len(left) > 3 else ""
+            print(f"注意:正文引用的 {names}{more}文件仍留在原项目(移动不会带走附件)")
+        if not yes and not typer.confirm("确认移动?"):
+            raise typer.Abort()
+    r = c.json("POST", f"/api/docs/{doc_id}/move", json_body=body)
+    if json_out:
+        print_json(r)
+    else:
+        print(f"已移动:{r.get('title', doc_id)}({r.get('movedDocs', 1)} 篇文档)")
+
+
 @app.command("rm")
 @handle
 def rm(doc_id: str = typer.Argument(..., help="文档 ID(整个子树一起进回收站)"),
