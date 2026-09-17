@@ -22,6 +22,16 @@ def _path(item_id: str, is_folder: bool, suffix: str = "") -> str:
     return ("/api/files/folders/" if is_folder else "/api/files/") + str(item_id) + suffix
 
 
+def is_embeddable(f: dict) -> bool:
+    """能不能在正文里当图片内嵌:图片类型 **且** 服务端 inline 白名单放行。
+
+    与服务端 media.py 的白名单同一份判据(前端 UI.isEmbedImage 是同一个意思):
+    只看 mime 会栽在"服务端不内联的图片类型"上(canInline 为假),插进正文就是裂图;
+    只看扩展名更糟 —— mime 由服务端按文件名判定,客户端不该另猜一套。
+    """
+    return str(f.get("mime") or "").startswith("image/") and bool(f.get("canInline"))
+
+
 def _with_dir_hint(e: ApiError, is_folder: bool) -> ApiError:
     """文件夹与文件是两套编号,走错表的表现就是 404「不存在」:补一句提示再原样抛。"""
     if e.status == 404 and not is_folder:
@@ -61,6 +71,9 @@ def ls(project_ref: str = typer.Argument(..., help="项目 ID 或名称"),
                 " ".join(filter(None, [
                     "被引用" if f.get("referenced") else "",
                     "公开" if f.get("isPublic") else "",
+                    # 能不能写进正文当图片:判据与服务端同一份(图片类型 **且** inline 白名单放行),
+                    # 别按本地文件后缀猜 —— 导入 Markdown 时正是靠它决定 ![]() 还是 []()
+                    "可内嵌" if is_embeddable(f) else "",
                 ]))] for f in files])
     if not folders and not files:
         print("(空)")
@@ -95,12 +108,9 @@ def down(file_id: str = typer.Argument(..., help="文件 ID"),
          out: str = typer.Option("", "-o", "--output", help="输出路径;缺省用服务端文件名")):
     """下载文件"""
     c = Client()
-    # 先拿一次响应头决定文件名(发 HEAD 不划算——服务端没实现,直接流式 GET)
-    with c.http.stream("GET", f"/api/files/{file_id}/download") as resp:
-        if resp.status_code >= 400:
-            from ..client import parse_error
-            code, message = parse_error(resp)
-            raise ApiError(resp.status_code, code, message)
+    # 先拿响应头决定文件名(发 HEAD 不划算——服务端没实现,直接流式 GET);
+    # 错误由 Client.stream 统一转成 ApiError(与 request 同一出口)
+    with c.stream("GET", f"/api/files/{file_id}/download") as resp:
         fallback = f"{file_id}.download"
         name = filename_from_disposition(resp.headers.get("content-disposition"), fallback)
         target = os.path.join(out, name) if os.path.isdir(out or "") else (out or name)
@@ -162,8 +172,8 @@ def mv(item_id: str = typer.Argument(..., help="文件 ID(文件夹加 --is-fold
     p = resolve_project(c, to)
     body: dict = {"projectId": p["id"]}
     if folder:
-        # 服务端两侧字段名不同,且文件的 folderId 只接受字符串(见 files.py move_file)
-        body["parentId" if is_folder else "folderId"] = folder if is_folder else str(folder)
+        # 服务端两侧字段名不同(文件用 folderId、文件夹用 parentId);两边都接受数字或数字串
+        body["parentId" if is_folder else "folderId"] = folder
     try:
         r = c.json("POST", _path(item_id, is_folder, "/move"), json_body=body)
     except ApiError as e:

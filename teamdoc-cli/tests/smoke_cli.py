@@ -248,7 +248,9 @@ print("\n=== 权限与退出码 ===")
 st, keep = call("POST", f"/api/projects/{PID}/docs", {"title": "权限测试留存文档"}, sid=sid)
 check("建权限测试文档", st == 200, str(keep)[:80])
 r = td(["doc", "edit", keep["id"]], token=TOKEN_RO, stdin_text="试试写入")
-check("read 令牌写操作 403 退出 1 + 提示", r.returncode == 1 and "FORBIDDEN" in r.stderr and "write" in r.stderr,
+# 判据是专职错误码 READ_ONLY_TOKEN(不是文案);CLI 的提示文案里带 read,write 指引
+check("read 令牌写操作 403 退出 1 + 提示",
+      r.returncode == 1 and "READ_ONLY_TOKEN" in r.stderr and "read,write" in r.stderr,
       f"rc={r.returncode} {r.stderr[:160]}")
 
 env_noauth = {k: v for k, v in os.environ.items() if k not in ("TD_SERVER", "TD_PAT")}
@@ -259,8 +261,9 @@ r = subprocess.run([sys.executable, "-m", "teamdoc_cli", "project", "ls"],
 check("未登录退出码 2", r.returncode == 2, f"rc={r.returncode} {r.stderr[:100]}")
 
 print("\n=== 公开项目(自助加入) ===")
-# 公开项目对**非成员**才是"可加入但不可读",而管理员绕开一切限制(auth.project_role 里
-# is_admin→ADMIN),用管理员测等于没测 —— 这一段必须换个普通账号。
+# 公开项目对**非成员**才是"可加入但不可读",而全局管理员的有效角色至少是 ADMIN
+# (auth.project_role 的 max 语义:成员角色与管理员兜底取高者),用管理员测等于没测
+# —— 这一段必须换个普通账号。
 jmail = f"cli-join-{uuid.uuid4().hex[:6]}@t.local"
 st, ju = call("POST", "/api/users", {"email": jmail, "name": "CLI 加入者", "password": "join12345"}, sid=sid)
 check("建普通用户", st == 200, str(ju)[:80])

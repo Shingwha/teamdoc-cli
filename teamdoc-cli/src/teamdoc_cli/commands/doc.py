@@ -51,8 +51,15 @@ def show(doc_id: str = typer.Argument(..., help="文档 ID"),
         print_json(d)
         return
     if meta:
+        # 位置走服务端的 location 契约 {projectId, projectName, path[]}(HANDOFF §8):
+        # 与网页端浮层是同一份数据,别自己在客户端拼路径
+        loc = d.get("location") or {}
+        where = " / ".join([str(loc.get("projectName") or d["projectId"])]
+                           + [str(x) for x in (loc.get("path") or [])])
         table(["字段", "值"], [
             ["ID", d["id"]], ["项目", d["projectId"]], ["标题", d["title"]],
+            ["位置", where],
+            ["字数", str(d.get("contentChars", "-"))],
             ["版本(保存次数)", str(d.get("version", "-"))],
             ["创建", fmt_time(d.get("createdAt"))], ["更新", fmt_time(d.get("updatedAt"))],
         ])

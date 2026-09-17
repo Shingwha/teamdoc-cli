@@ -67,6 +67,24 @@ def read_text_input(file: str | None, *, required: bool = False) -> str | None:
     return None
 
 
+def _detail_lines(e: ApiError) -> list[str]:
+    """把错误附带的现场数据翻译成人话(服务端契约:HANDOFF §8 的 409 CONFLICT)。
+
+    只说一句"已被他人修改"会让人无从下手 —— 服务端把现场一起回过来了
+    (currentVersion / currentContent / by),就该用上;用不上也要看得见,
+    所以未识别的字段按 k=v 兜底列出。
+    """
+    d = e.detail or {}
+    if e.code == "CONFLICT" and "currentVersion" in d:
+        out = [f"服务端当前版本:v{d['currentVersion']}"
+               + (f"(由 {d.get('by')} 保存)" if d.get("by") else "")]
+        if isinstance(d.get("currentContent"), str):
+            out.append(f"服务端正文 {len(d['currentContent'])} 字;"
+                       "先 `td doc show <文档ID> -o theirs.md` 取回来对比合并,再整体覆盖写入")
+        return out
+    return [f"{k}={str(v)[:80]}" for k, v in d.items()]
+
+
 def handle(fn):
     """统一错误出口:ApiError → 1,ConfigError → 2。所有命令注册前包一层。"""
 
@@ -77,8 +95,10 @@ def handle(fn):
         except ApiError as e:
             typer.secho(f"API 错误 {e}", fg=typer.colors.RED, err=True)
             if e.needs_write_scope:
-                typer.secho("提示:当前令牌可能只有 read 权限。到网页「个人设置 → 访问令牌」"
+                typer.secho("提示:当前令牌只有 read 权限。到网页「个人设置 → 访问令牌」"
                             "创建 read,write 令牌后重新 td login。", fg=typer.colors.YELLOW, err=True)
+            for line in _detail_lines(e):
+                typer.secho(line, fg=typer.colors.YELLOW, err=True)
             raise typer.Exit(1)
         except ConfigError as e:
             typer.secho(str(e), fg=typer.colors.YELLOW, err=True)
